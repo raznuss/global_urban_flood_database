@@ -18,7 +18,7 @@ warnings.filterwarnings('ignore')
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 INPUT_PATH    = r"D:\Development\RESEARCH\urban_flood_database\Groundsource\groundsource_2026.parquet"
-GHS_RASTER    = r"D:\Development\RESEARCH\global_datasets\GHS_BUILT\GHS_BUILT_S_E2020_GLOBE_R2023A_54009_100_V1_0.tif"
+GHS_RASTER    = r"D:\Development\RESEARCH\Raanana\data\esa_worldcover\GHS_BUILT_S_E2020_GLOBE_R2023A_54009_100_V1_0.tif"
 OUTPUT_DIR    = r"D:\MY_CODES\global_urban_flood_database\groundsource\outputs"
 OUTPUT_PATH   = os.path.join(OUTPUT_DIR, "groundsource_urban_df.parquet")
 CHUNK_DIR     = os.path.join(OUTPUT_DIR, "urban_chunks")
@@ -44,11 +44,11 @@ log = logging.getLogger(__name__)
 
 # ── Worker — must be module-level for ProcessPoolExecutor pickling ─────────────
 def _zonal_stats_worker(args):
-    wkb_bytes_list, raster_path, mollweide_crs = args
+    wkb_bytes_list, raster_path, mollweide_crs, nodata = args
     import geopandas as gpd
     from rasterstats import zonal_stats
     geoms = gpd.GeoSeries.from_wkb(wkb_bytes_list, crs=mollweide_crs)
-    results = zonal_stats(list(geoms), raster_path, stats=['sum'], all_touched=True, nodata=0)
+    results = zonal_stats(list(geoms), raster_path, stats=['sum'], nodata=nodata)
     return [r.get('sum', 0) or 0 for r in results]
 
 
@@ -66,6 +66,11 @@ def main():
     gdf['polygon_total_area_m2'] = gdf.geometry.area
     log.info("Reprojected to Mollweide")
 
+    import rasterio
+    with rasterio.open(GHS_RASTER) as src:
+        nodata = src.nodata
+    log.info(f"Raster nodata value: {nodata}")
+
     wkb_mollweide = gdf.geometry.to_wkb()
     total_chunks  = (len(gdf) + CHUNK_SIZE - 1) // CHUNK_SIZE
 
@@ -82,7 +87,7 @@ def main():
     if pending:
         tasks = {
             idx: (wkb_mollweide.iloc[idx * CHUNK_SIZE : (idx + 1) * CHUNK_SIZE].tolist(),
-                  GHS_RASTER, MOLLWEIDE_CRS)
+                  GHS_RASTER, MOLLWEIDE_CRS, nodata)
             for idx in pending
         }
         t2 = time.time()
