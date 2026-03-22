@@ -67,8 +67,8 @@ def rasterize_polygon(wkb_bytes, origin_lon, origin_lat, n_lon, n_lat):
 
 def extract_rain_matrix(wkb_bytes, storm_date, product='final'):
     collection_id = (
-        'NASA/GPM_L3/IMERG_V07/FINAL/HALF_HOURLY' if product == 'final'
-        else 'NASA/GPM_L3/IMERG_V07/LATE/HALF_HOURLY'
+        'NASA/GPM_L3/IMERG_V07' if product == 'final'
+        else 'NASA/GPM_L3/IMERG_V07_LATE'
     )
     t_start = storm_date - timedelta(hours=HOURS_BEFORE)
     t_end   = storm_date + timedelta(hours=HOURS_AFTER)
@@ -81,7 +81,7 @@ def extract_rain_matrix(wkb_bytes, storm_date, product='final'):
           .filterDate(t_start.strftime('%Y-%m-%dT%H:%M:%S'),
                       t_end.strftime('%Y-%m-%dT%H:%M:%S'))
           .filterBounds(region)
-          .select('precipitationCal'))
+          .select('precipitation'))
 
     n_images = ic.size().getInfo()
     if n_images == 0:
@@ -94,7 +94,7 @@ def extract_rain_matrix(wkb_bytes, storm_date, product='final'):
     for i in range(n_images):
         img  = ee.Image(image_list.get(i))
         info = img.sampleRectangle(region=region, defaultValue=0).getInfo()
-        arr  = np.array(info['properties']['precipitationCal'], dtype=np.float32)
+        arr  = np.array(info['properties']['precipitation'], dtype=np.float32)
         if n_lat is None:
             n_lat, n_lon = arr.shape
             coords = info.get('geometry', {}).get('coordinates', [[]])[0]
@@ -144,7 +144,7 @@ def scan_for_storms(wkb_bytes, flood_dates_set):
                 ic = (ee.ImageCollection('NASA/GPM_L3/IMERG_V07/FINAL/HALF_HOURLY')
                       .filterDate(t_start, t_end)
                       .filterBounds(region)
-                      .select('precipitationCal'))
+                      .select('precipitation'))
                 n = ic.size().getInfo()
                 if n == 0:
                     continue
@@ -159,7 +159,7 @@ def scan_for_storms(wkb_bytes, flood_dates_set):
 
                 best_ts, best_val = None, -1
                 for feat in daily_info:
-                    val = feat.get('precipitationCal', 0) or 0
+                    val = feat.get('precipitation', 0) or 0
                     if val > best_val:
                         best_val, best_ts = val, feat.get('system:time_start')
 
@@ -179,7 +179,7 @@ def scan_for_storms(wkb_bytes, flood_dates_set):
 def main():
     os.makedirs(BATCH_DIR, exist_ok=True)
 
-    ee.Initialize(project=GEE_PROJECT)
+    ee.Initialize()
     log.info("GEE initialised")
 
     df = pd.read_parquet(INPUT_PATH)

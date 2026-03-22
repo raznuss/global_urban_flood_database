@@ -75,8 +75,8 @@ def build_time_window(start_date):
 
 def extract_imerg_for_event(wkb_bytes, start_date, product='final'):
     collection_id = (
-        'NASA/GPM_L3/IMERG_V07/FINAL/HALF_HOURLY' if product == 'final'
-        else 'NASA/GPM_L3/IMERG_V07/LATE/HALF_HOURLY'
+        'NASA/GPM_L3/IMERG_V07' if product == 'final'
+        else 'NASA/GPM_L3/IMERG_V07_LATE'
     )
     t_start_str, t_end_str = build_time_window(start_date)
     min_lon, min_lat, max_lon, max_lat = get_bounding_box(wkb_bytes)
@@ -85,37 +85,32 @@ def extract_imerg_for_event(wkb_bytes, start_date, product='final'):
     ic = (ee.ImageCollection(collection_id)
           .filterDate(t_start_str, t_end_str)
           .filterBounds(region)
-          .select('precipitationCal'))
+          .select('precipitation'))
 
     n_images = ic.size().getInfo()
     if n_images == 0:
         return None, None, None
 
-    image_list = ic.toList(n_images)
-    slices, timestamps = [], []
-    n_lon = n_lat = origin_lon = origin_lat = None
+    # Download all timesteps in a single GEE call (toBands approach — same as chronicle)
+    pixel_dict = ic.toBands().sampleRectangle(region=region, defaultValue=0).getInfo()
+    properties = pixel_dict['properties']
+    band_keys  = sorted(properties.keys())
 
-    for i in range(n_images):
-        img  = ee.Image(image_list.get(i))
-        info = img.sampleRectangle(region=region, defaultValue=0).getInfo()
-        arr  = np.array(info['properties']['precipitationCal'], dtype=np.float32)
-        if n_lat is None:
-            n_lat, n_lon = arr.shape
-            coords = info.get('geometry', {}).get('coordinates', [[]])[0]
-            if coords:
-                lons = [c[0] for c in coords]
-                lats = [c[1] for c in coords]
-                origin_lon, origin_lat = min(lons), max(lats)
-            else:
-                origin_lon, origin_lat = min_lon, max_lat
-        ts = img.get('system:time_start').getInfo()
-        timestamps.append(datetime.utcfromtimestamp(ts / 1000).strftime('%Y-%m-%dT%H:%M:%S'))
-        slices.append(arr)
+    arrays = [np.array(properties[b], dtype=np.float32) for b in band_keys]
+    matrix = np.stack(arrays, axis=0)   # shape: (T, H, W)
 
-    matrix = np.stack(slices, axis=0)
-    mask   = rasterize_polygon(wkb_bytes, origin_lon, origin_lat, n_lon, n_lat)
-    meta   = {'origin_lon': origin_lon, 'origin_lat': origin_lat,
-              'scale_deg': SCALE_DEG, 'shape': matrix.shape, 'timestamps': timestamps}
+    n_lat, n_lon   = matrix.shape[1], matrix.shape[2]
+    origin_lon     = min_lon
+    origin_lat     = max_lat
+
+    mask = rasterize_polygon(wkb_bytes, origin_lon, origin_lat, n_lon, n_lat)
+    meta = {
+        'origin_lon' : origin_lon,
+        'origin_lat' : origin_lat,
+        'scale_deg'  : SCALE_DEG,
+        'shape'      : matrix.shape,
+        'timestamps' : band_keys,
+    }
     return matrix, mask, meta
 
 
@@ -130,7 +125,7 @@ def get_completed_event_ids(batch_dir):
 def main():
     os.makedirs(BATCH_DIR, exist_ok=True)
 
-    ee.Initialize(project=GEE_PROJECT)
+    ee.Initialize()
     log.info("GEE initialised")
 
     df = pd.read_parquet(INPUT_PATH).reset_index(drop=True)
